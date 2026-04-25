@@ -1,0 +1,77 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pip
+            ~/.platformio/.cache
+          key: ${{ runner.os }}-pio-${{ hashFiles('platformio.ini') }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install PlatformIO
+        run: pip install --upgrade platformio
+
+      - name: Generate secrets.h
+        env:
+          WIFI_SSID: ${{ secrets.WIFI_SSID }}
+          WIFI_PASSWORD: ${{ secrets.WIFI_PASSWORD }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          GOOGLE_CALENDAR_ID: ${{ secrets.GOOGLE_CALENDAR_ID }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          python3 - << 'PYEOF'
+          import os
+          repo = os.environ['GITHUB_REPOSITORY']
+          lines = [
+              '#pragma once',
+              '#define WIFI_SSID               "{}"'.format(os.environ['WIFI_SSID']),
+              '#define WIFI_PASSWORD           "{}"'.format(os.environ['WIFI_PASSWORD']),
+              '#define GOOGLE_CLIENT_ID        "{}"'.format(os.environ['GOOGLE_CLIENT_ID']),
+              '#define GOOGLE_CLIENT_SECRET    "{}"'.format(os.environ['GOOGLE_CLIENT_SECRET']),
+              '#define GOOGLE_CALENDAR_ID      "{}"'.format(os.environ['GOOGLE_CALENDAR_ID']),
+              '#define OTA_VERSION_URL  "https://github.com/{}/releases/latest/download/version.txt"'.format(repo),
+              '#define OTA_FIRMWARE_URL "https://github.com/{}/releases/latest/download/firmware.bin"'.format(repo),
+          ]
+          with open('examples/custom_calendar/secrets.h', 'w') as f:
+              f.write('\n'.join(lines) + '\n')
+          print("secrets.h written")
+          PYEOF
+
+      - name: Build firmware
+        run: platformio run -e T5-ePaper-S3
+
+      - name: Extract version and prepare artifacts
+        run: |
+          VERSION=$(grep '#define FIRMWARE_VERSION' examples/custom_calendar/custom_calendar.ino \
+            | sed 's/.*"\(.*\)".*/\1/')
+          echo "$VERSION" > version.txt
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "Firmware version: $VERSION"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "Firmware ${{ env.VERSION }}"
+          body: |
+            Automated firmware build for LilyGo T5 EPD47 Google Calendar display.
+            Flash via USB: `platformio run -e T5-ePaper-S3 -t upload`
+            OTA: device auto-updates within 1 hour of release.
+          files: |
+            .pio/build/T5-ePaper-S3/firmware.bin
+            version.txt
