@@ -5,6 +5,9 @@ on:
     tags:
       - 'v*'
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -57,17 +60,18 @@ jobs:
         run: platformio run -e T5-ePaper-S3
 
       - name: Extract version and prepare artifacts
+        id: version
         run: |
           VERSION=$(grep '#define FIRMWARE_VERSION' examples/custom_calendar/custom_calendar.ino \
             | sed 's/.*"\(.*\)".*/\1/')
           echo "$VERSION" > version.txt
-          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "value=$VERSION" >> $GITHUB_OUTPUT
           echo "Firmware version: $VERSION"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          name: "Firmware ${{ env.VERSION }}"
+          name: "Firmware ${{ steps.version.outputs.value }}"
           body: |
             Automated firmware build for LilyGo T5 EPD47 Google Calendar display.
             Flash via USB: `platformio run -e T5-ePaper-S3 -t upload`
