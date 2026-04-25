@@ -5,3 +5,5 @@
 test
 build
 secrets.h
+build_version.txt
+examples/custom_calendar/build_version.h

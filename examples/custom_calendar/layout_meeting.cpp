@@ -1,6 +1,7 @@
 #include "layout_meeting.h"
 #include "render_utils.h"
 #include "config.h"
+#include "build_version.h"
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -233,4 +234,7 @@ void layout_meeting_draw(uint8_t *fb, const CalendarData &data, time_t now,
                           const CalendarEvent &ev) {
     drawTimeline(fb, data, now, ev);
     drawEventDetail(fb, ev, now);
+
+    // Build version — bottom-right corner
+    rutil_textRight(&NotoSansKR_8, BUILD_VERSION, SCREEN_W - 4, SCREEN_H - 4, fb);
 }

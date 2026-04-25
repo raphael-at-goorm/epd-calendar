@@ -62,9 +62,8 @@ jobs:
       - name: Extract version and prepare artifacts
         id: version
         run: |
-          VERSION=$(grep '#define FIRMWARE_VERSION' examples/custom_calendar/custom_calendar.ino \
-            | sed 's/.*"\(.*\)".*/\1/')
-          echo "$VERSION" > version.txt
+          VERSION=$(cat build_version.txt)
+          cp build_version.txt version.txt
           echo "value=$VERSION" >> $GITHUB_OUTPUT
           echo "Firmware version: $VERSION"
 

@@ -1,6 +1,7 @@
 #include "layout_weekly.h"
 #include "render_utils.h"
 #include "config.h"
+#include "build_version.h"
 #include <time.h>
 #include <string.h>
 #include <stdio.h>
@@ -259,4 +260,8 @@ void layout_weekly_draw(uint8_t *fb, const CalendarData &data, time_t now) {
             epd_fill_circle(4, curY, 4, 0x00, fb);
         }
     }
+
+    // Build version — bottom-right corner
+    // NotoSansKR_8: descent=2, so baseline at SCREEN_H-4 puts text bottom at SCREEN_H-2
+    rutil_textRight(&NotoSansKR_8, BUILD_VERSION, SCREEN_W - 4, SCREEN_H - 4, fb);
 }
