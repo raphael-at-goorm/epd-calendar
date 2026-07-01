@@ -14,7 +14,7 @@ static const char *KO_DOW[] = {"일","월","화","수","목","금","토"};
 #define FONT8_LINE_H   13
 
 // Virtual timeline: 09:00 – 23:30 at TGRID_W_PX_HOUR px/hr
-// VEND = (23 - 9) * 48 + 24 = 672 + 24 = 696  virtual pixels
+// VEND = 14.5 hours * TGRID_W_PX_HOUR virtual pixels.
 #define VPXHR   TGRID_W_PX_HOUR
 #define VEND    ((TGRID_W_END_H - TGRID_START_H) * VPXHR + VPXHR / 2)
 
@@ -33,9 +33,17 @@ static int timeToVY(time_t t) {
     return (int)(h * VPXHR);
 }
 
-// Place current time at ~1/3 from top of visible area
+// Hold the viewport steady within each 30-minute slot to reduce e-paper ghosting.
+static int timeToHalfHourVY(time_t t) {
+    struct tm lt;
+    localtime_r(&t, &lt);
+    int minutes = (lt.tm_hour - TGRID_START_H) * 60 + (lt.tm_min >= 30 ? 30 : 0);
+    return minutes * VPXHR / 60;
+}
+
+// Place the current 30-minute slot at ~1/3 from top of visible area.
 static int getScrollOffset(time_t now, int evAreaH) {
-    int curVY  = timeToVY(now);
+    int curVY  = timeToHalfHourVY(now);
     int offset = curVY - evAreaH / 3;
     int maxOff = VEND - evAreaH;
     if (offset < 0) offset = 0;
@@ -45,22 +53,6 @@ static int getScrollOffset(time_t now, int evAreaH) {
 
 static int vToScreen(int vY, int evAreaY, int scrollOff) {
     return evAreaY + vY - scrollOff;
-}
-
-// Returns screen Y of the current-time marker, or -1 if outside visible range.
-int layout_weekly_timeMarkerY(time_t now) {
-    struct tm lt;
-    localtime_r(&now, &lt);
-    if (lt.tm_hour < TGRID_START_H) return -1;
-    float hf = (float)(lt.tm_hour - TGRID_START_H) + lt.tm_min / 60.0f;
-    if ((int)(hf * VPXHR) > VEND) return -1;
-
-    int evAreaY  = WEEK_STRIP_Y + WEEK_STRIP_H + 1;
-    int evAreaH  = SCREEN_H - evAreaY;
-    int scrollOff = getScrollOffset(now, evAreaH);
-    int screenY  = vToScreen((int)(hf * VPXHR), evAreaY, scrollOff);
-    if (screenY < evAreaY || screenY > evAreaY + evAreaH) return -1;
-    return screenY;
 }
 
 // Wrap NotoSansKR_8 text within a block (title font — never grayed)
@@ -101,8 +93,7 @@ static void drawWrap8(const char *str, int x, int maxW,
 
 static void drawDayColumn(uint8_t *fb, const CalendarData &data,
                            int colX, int colW, int evAreaY, int evAreaH,
-                           int year, int mon, int mday, bool isToday,
-                           time_t now, int scrollOff) {
+                           int year, int mon, int mday, int scrollOff) {
     const int PAD = 2;
     const int BX  = colX + PAD + 1;
     const int BW  = colW - PAD * 2 - 2;
@@ -163,10 +154,6 @@ void layout_weekly_draw(uint8_t *fb, const CalendarData &data, time_t now) {
     char hdrDate[64];
     rutil_fmtDateHeaderKo(now, hdrDate, sizeof(hdrDate));
     rutil_text(&NotoSansKR_12, hdrDate, 10, 26, fb);
-
-    char hdrTime[12];
-    snprintf(hdrTime, sizeof(hdrTime), "%02d:%02d", lt.tm_hour, lt.tm_min);
-    rutil_textRight(&NotoSansKR_12, hdrTime, SCREEN_W - 10, 26, fb);
 
     rutil_hline(0, HEADER_H, SCREEN_W, 0x00, fb);
 
@@ -243,22 +230,9 @@ void layout_weekly_draw(uint8_t *fb, const CalendarData &data, time_t now) {
         struct tm day = weekSun;
         day.tm_mday += col;
         mktime(&day);
-        bool isToday = (day.tm_year == lt.tm_year &&
-                        day.tm_mon  == lt.tm_mon  &&
-                        day.tm_mday == lt.tm_mday);
         drawDayColumn(fb, data, col * WEEK_COL_W, WEEK_COL_W, evAreaY, evAreaH,
                       day.tm_year + 1900, day.tm_mon + 1, day.tm_mday,
-                      isToday, now, scrollOff);
-    }
-
-    // Current time marker (drawn last — overlays event blocks)
-    int curVY = timeToVY(now);
-    if (curVY >= 0 && curVY <= VEND) {
-        int curY = vToScreen(curVY, evAreaY, scrollOff);
-        if (curY >= evAreaY && curY <= evAreaY + evAreaH) {
-            rutil_hline(0, curY, SCREEN_W, 0x00, fb);
-            epd_fill_circle(4, curY, 4, 0x00, fb);
-        }
+                      scrollOff);
     }
 
     // Build version — bottom-right corner

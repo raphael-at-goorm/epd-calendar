@@ -43,8 +43,15 @@ static int tline_timeToVY(time_t t) {
     return (int)(h * TLINE_VPXHR);
 }
 
+static int tline_timeToHalfHourVY(time_t t) {
+    struct tm lt;
+    localtime_r(&t, &lt);
+    int minutes = (lt.tm_hour - TGRID_START_H) * 60 + (lt.tm_min >= 30 ? 30 : 0);
+    return minutes * TLINE_VPXHR / 60;
+}
+
 static int tline_scrollOff(time_t now, int areaH) {
-    int curVY  = tline_timeToVY(now);
+    int curVY  = tline_timeToHalfHourVY(now);
     int offset = curVY - areaH / 3;
     int maxOff = TLINE_VEND - areaH;
     if (offset < 0) offset = 0;
@@ -133,13 +140,6 @@ static void drawTimeline(uint8_t *fb, const CalendarData &data, time_t now,
         }
     }
 
-    // Current time marker
-    int curVY = tline_timeToVY(now);
-    int curY  = tline_vToScreen(curVY, scrollOff);
-    if (curY >= TLINE_TOP && curY <= SCREEN_H) {
-        rutil_hline(TLINE_LABEL_W, curY, MEETING_SPLIT_X - TLINE_LABEL_W, 0x00, fb);
-        epd_fill_circle(TLINE_LABEL_W, curY, 4, 0x00, fb);
-    }
 }
 
 // ── Right panel: event detail ─────────────────────────────────────────────────
@@ -152,7 +152,6 @@ static void drawEventDetail(uint8_t *fb, const CalendarEvent &ev, time_t now) {
     rutil_vline(MEETING_SPLIT_X, 0, SCREEN_H, 0x00, fb);
 
     bool inProgress = (now >= ev.startTime);
-    long diff       = (long)(ev.startTime - now);
 
     // ── Badge strip: shifted +10px, expanded +10px (y=14, h=32, bottom=46) ──
     const char *badge = inProgress ? "진행 중" : "곧 시작";
@@ -178,15 +177,8 @@ static void drawEventDetail(uint8_t *fb, const CalendarEvent &ev, time_t now) {
     // Time row
     char trange[32];
     rutil_fmtTimeRange(ev.startTime, ev.endTime, trange, sizeof(trange));
-    char countdown[28] = {};
-    if (!inProgress && diff > 0)
-        snprintf(countdown, sizeof(countdown), " (%ld분 후)", diff / 60);
-    else if (inProgress)
-        snprintf(countdown, sizeof(countdown), " (%ld분 경과)", (long)(now - ev.startTime) / 60);
-    char timeInfo[72];
-    snprintf(timeInfo, sizeof(timeInfo), "%s%s", trange, countdown);
     drawTextBold(&NotoSansKR_12, "시간", px, y, fb);
-    rutil_text(&NotoSansKR_12, timeInfo, px + LABEL_COL, y, fb);
+    rutil_text(&NotoSansKR_12, trange, px + LABEL_COL, y, fb);
     y += ROW_H;
 
     // Location row

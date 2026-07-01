@@ -16,10 +16,6 @@ static void drawDailyContent(uint8_t *fb, const CalendarData &data, time_t now,
         rutil_fmtDateHeaderKo(now, dateBuf, sizeof(dateBuf));
         rutil_text(&NotoSansKR_16, dateBuf, x + 12, 24, fb);
 
-        char clockBuf[16];
-        snprintf(clockBuf, sizeof(clockBuf), "%02d:%02d", lt.tm_hour, lt.tm_min);
-        rutil_textRight(&NotoSansKR_24, clockBuf, x + w - 12, 26, fb);
-
         rutil_hline(x, HEADER_H, w, 0x00, fb);
     } else {
         char hdr[64];

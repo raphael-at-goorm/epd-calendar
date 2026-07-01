@@ -47,12 +47,10 @@ static CalendarData  g_calData;
 static uint8_t      *g_fb = nullptr;
 static DisplayMode   g_mode = MODE_WEEKLY;
 static int           g_activeMeetingIdx = -1;
+static bool          g_activeMeetingInProgress = false;
 
 static unsigned long g_lastCalFetch = 0;
-static int           g_lastDrawnMin = -1;  // last minute drawn (0-59, -1=never)
-
-static int           g_prevTimeMarkerY = -1;   // previous week-view time marker Y
-static int           g_prevCountdownMin = -1;  // previous meeting countdown minute
+static int           g_lastDrawnHalfHourSlot = -1;  // 0-47, -1=never
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 static bool isSleepHours(time_t t) {
@@ -63,6 +61,12 @@ static bool isSleepHours(time_t t) {
 static bool isRefreshAllowed(time_t t) {
     struct tm lt; localtime_r(&t, &lt);
     return lt.tm_hour >= 9;  // 09:00–23:59 KST
+}
+
+static int halfHourSlot(time_t t) {
+    struct tm lt;
+    localtime_r(&t, &lt);
+    return lt.tm_hour * 2 + (lt.tm_min >= 30 ? 1 : 0);
 }
 
 // ── HTTP pull OTA ─────────────────────────────────────────────────────────────
@@ -168,7 +172,7 @@ static void fbFlush() {
         epd_clear_area_cycles(epd_full_screen(), 4, 50);
         g_lastRefresh4MinOfDay = minOfDay;
         g_lastRefresh2MinOfDay = minOfDay;
-    } else if ((lt.tm_min % 10 == 0) &&
+    } else if ((lt.tm_min % 30 == 0) &&
                (minOfDay != g_lastRefresh2MinOfDay)) {
         epd_clear_area_cycles(epd_full_screen(), 2, 50);
         g_lastRefresh2MinOfDay = minOfDay;
@@ -208,15 +212,6 @@ static void flashArea(int x, int y1, int w, int h, int cycles = 2, int cycle_tim
     epd_poweroff();
 
     free(saved);
-}
-
-// Flash just the horizontal band between oldY and newY to remove time-marker ghost.
-static void flashTimeMarkerBand(int newY, int oldY) {
-    if (newY < 0 && oldY < 0) return;
-
-    int y1 = (oldY >= 0 && oldY < newY ? oldY : newY) - 5;
-    int y2 = (oldY >= 0 && oldY > newY ? oldY : newY) + 5;
-    flashArea(0, y1, EPD_WIDTH, y2 - y1 + 1, 4);
 }
 
 // ── Auth setup screen ─────────────────────────────────────────────────────────
@@ -366,7 +361,7 @@ void setup() {
     g_lastCalFetch = millis();
 
     redrawScreen();
-    { time_t t = time(nullptr); struct tm lt; localtime_r(&t, &lt); g_lastDrawnMin = lt.tm_min; }
+    g_lastDrawnHalfHourSlot = halfHourSlot(time(nullptr));
 }
 
 // ── Loop ──────────────────────────────────────────────────────────────────────
@@ -378,8 +373,7 @@ void loop() {
 
     unsigned long now_ms = millis();
     time_t        now    = time(nullptr);
-    struct tm     lt;
-    localtime_r(&now, &lt);
+    int           currentHalfHourSlot = halfHourSlot(now);
 
     bool needFullRedraw = false;
 
@@ -388,6 +382,7 @@ void loop() {
         if (g_mode != MODE_SLEEP) {
             g_mode = MODE_SLEEP;
             g_activeMeetingIdx = -1;
+            g_activeMeetingInProgress = false;
             fbRequestFullClear();
             drawSleepScreen();
         }
@@ -401,6 +396,7 @@ void loop() {
         wifiConnect();
         gcal_fetchEvents(g_calData);
         g_lastCalFetch = now_ms;
+        g_activeMeetingInProgress = false;
         needFullRedraw = true;
     }
 
@@ -413,25 +409,28 @@ void loop() {
     }
 #endif
 
-    // ── Calendar refresh every 1 min (09:00–24:00 only) ──────────────────────
+    // ── Calendar data refresh every 1 min; display redraw stays 30-min based ─
     if (!needFullRedraw &&
         isRefreshAllowed(now) &&
         now_ms - g_lastCalFetch >= CALENDAR_FETCH_INTERVAL_MS) {
         wifiConnect();
         gcal_fetchEvents(g_calData);
         g_lastCalFetch = now_ms;
-        needFullRedraw = true;
     }
 
     // ── Meeting detection ─────────────────────────────────────────────────────
     int meetingIdx = findActiveMeetingIndex(g_calData, now);
 
     if (meetingIdx >= 0) {
+        bool meetingInProgress = (now >= g_calData.events[meetingIdx].startTime);
         if (g_mode != MODE_MEETING || g_activeMeetingIdx != meetingIdx) {
             g_mode = MODE_MEETING;
             g_activeMeetingIdx = meetingIdx;
-            g_prevTimeMarkerY  = -1;
-            g_prevCountdownMin = -1;
+            g_activeMeetingInProgress = meetingInProgress;
+            fbRequestFullClear();
+            needFullRedraw = true;
+        } else if (g_activeMeetingInProgress != meetingInProgress) {
+            g_activeMeetingInProgress = meetingInProgress;
             fbRequestFullClear();
             needFullRedraw = true;
         }
@@ -439,46 +438,20 @@ void loop() {
         if (g_mode == MODE_MEETING) {
             g_mode = MODE_WEEKLY;
             g_activeMeetingIdx = -1;
-            g_prevTimeMarkerY  = -1;
-            g_prevCountdownMin = -1;
+            g_activeMeetingInProgress = false;
             fbRequestFullClear();
             needFullRedraw = true;
         }
     }
 
-    // ── Clock refresh at minute boundary ─────────────────────────────────────
-    if (!needFullRedraw && lt.tm_min != g_lastDrawnMin) {
+    // ── Visual refresh only when the 30-minute viewport slot changes ─────────
+    if (!needFullRedraw && currentHalfHourSlot != g_lastDrawnHalfHourSlot) {
         needFullRedraw = true;
     }
 
     if (needFullRedraw) {
         redrawScreen();
-        { time_t t2 = time(nullptr); struct tm lt2; localtime_r(&t2, &lt2); g_lastDrawnMin = lt2.tm_min; }
-
-        if (g_mode == MODE_WEEKLY) {
-            // 2-cycle partial refresh for full header row (date + time)
-            flashArea(0, 0, SCREEN_W, HEADER_H, 2, 500);
-            // 4-cycle clear for current-time marker band
-            int newY = layout_weekly_timeMarkerY(now);
-            if (newY >= 0) {
-                flashTimeMarkerBand(newY, g_prevTimeMarkerY);
-                g_prevTimeMarkerY = newY;
-            }
-        }
-
-        if (g_mode == MODE_MEETING && g_activeMeetingIdx >= 0) {
-            const CalendarEvent &ev = g_calData.events[g_activeMeetingIdx];
-            long diff = (long)(ev.startTime - now);
-            bool inProgress = (now >= ev.startTime);
-            int curMin = inProgress ? (int)((now - ev.startTime) / 60)
-                                    : (int)(diff / 60);
-            if (curMin != g_prevCountdownMin) {
-                // Time row is at y≈114–130 (titleY=76, nextY+22).
-                // Flash y=90..150 on right panel to clear countdown ghost.
-                flashArea(0, 90, EPD_WIDTH, 65);
-                g_prevCountdownMin = curMin;
-            }
-        }
+        g_lastDrawnHalfHourSlot = halfHourSlot(time(nullptr));
     }
 
     // Sleep until next minute boundary, polling OTA every 500ms
