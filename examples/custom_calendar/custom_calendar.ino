@@ -83,6 +83,8 @@ static void checkHttpOta() {
     verClient.setInsecure();
     HTTPClient http;
     http.begin(verClient, OTA_VERSION_URL);
+    http.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
+    http.setRedirectLimit(5);
     http.setTimeout(8000);
     int code = http.GET();
     if (code != 200) {
@@ -101,6 +103,7 @@ static void checkHttpOta() {
     WiFiClientSecure dlClient;
     dlClient.setInsecure();
     httpUpdate.rebootOnUpdate(true);
+    httpUpdate.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
     t_httpUpdate_return ret = httpUpdate.update(dlClient, OTA_FIRMWARE_URL);
     if (ret == HTTP_UPDATE_FAILED) {
         Serial.printf("[ota] failed (%d): %s\n",
@@ -377,6 +380,14 @@ void loop() {
 
     bool needFullRedraw = false;
 
+#ifdef OTA_VERSION_URL
+    if (now_ms - g_lastHttpOtaMs >= HTTP_OTA_INTERVAL_MS) {
+        g_lastHttpOtaMs = now_ms;
+        wifiConnect();
+        checkHttpOta();
+    }
+#endif
+
     // ── Sleep gate: 00:00–09:00 KST ──────────────────────────────────────────
     if (isSleepHours(now)) {
         if (g_mode != MODE_SLEEP) {
@@ -386,7 +397,11 @@ void loop() {
             fbRequestFullClear();
             drawSleepScreen();
         }
-        delay(60000);  // check again in 1 min
+        unsigned long deadline = millis() + 60000UL;
+        while ((long)(deadline - millis()) > 0) {
+            ArduinoOTA.handle();
+            delay(500);
+        }
         return;
     }
 
@@ -399,15 +414,6 @@ void loop() {
         g_activeMeetingInProgress = false;
         needFullRedraw = true;
     }
-
-    // ── HTTP pull OTA: hourly check ───────────────────────────────────────────
-#ifdef OTA_VERSION_URL
-    if (now_ms - g_lastHttpOtaMs >= HTTP_OTA_INTERVAL_MS) {
-        g_lastHttpOtaMs = now_ms;
-        wifiConnect();
-        checkHttpOta();
-    }
-#endif
 
     // ── Calendar data refresh every 1 min; display redraw stays 30-min based ─
     if (!needFullRedraw &&

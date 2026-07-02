@@ -3,43 +3,62 @@ name: PlatformIO CI
 on:
   workflow_dispatch:
   pull_request:
-  push:
+    branches:
+      - main
     paths:
       - "examples/**"
       - "src/**"
       - "platformio.ini"
       - ".github/workflows/platformio.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "examples/**"
+      - "src/**"
+      - "platformio.ini"
+      - ".github/workflows/platformio.yml"
+
 jobs:
   build:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        examples:
-          - examples/button
-          - examples/demo
-          - examples/drawExample
-          - examples/drawImages
-          - examples/grayscale_test
-          - examples/screen_repair
-          - examples/spi_driver
-          - examples/touch
-          - examples/wifi_sync
 
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/cache@v3
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
         with:
           path: |
             ~/.cache/pip
             ~/.platformio/.cache
-          key: ${{ runner.os }}-pio
-      - uses: actions/setup-python@v4
+          key: ${{ runner.os }}-pio-${{ hashFiles('platformio.ini') }}
+      - uses: actions/setup-python@v5
         with:
-          python-version: "3.9"
+          python-version: "3.11"
+
       - name: Install PlatformIO Core
         run: pip install --upgrade platformio
 
-      - name: Run PlatformIO
+      - name: Generate test secrets.h
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
-          export PLATFORMIO_SRC_DIR=${{ matrix.examples }}
-          pio run
+          python3 - << 'PYEOF'
+          import os
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          lines = [
+              "#pragma once",
+              '#define WIFI_SSID               "ci"',
+              '#define WIFI_PASSWORD           "ci"',
+              '#define GOOGLE_CLIENT_ID        "ci.apps.googleusercontent.com"',
+              '#define GOOGLE_CLIENT_SECRET    "ci"',
+              '#define GOOGLE_CALENDAR_ID      "ci@example.com"',
+              '#define OTA_VERSION_URL  "https://github.com/{}/releases/latest/download/version.txt"'.format(repo),
+              '#define OTA_FIRMWARE_URL "https://github.com/{}/releases/latest/download/firmware.bin"'.format(repo),
+          ]
+          with open("examples/custom_calendar/secrets.h", "w") as f:
+              f.write("\n".join(lines) + "\n")
+          PYEOF
+
+      - name: Run PlatformIO
+        run: platformio run -e T5-ePaper-S3
