@@ -39,7 +39,7 @@
 // ── State ─────────────────────────────────────────────────────────────────────
 // MODE_WEEKLY  : default view (always shown outside meeting time)
 // MODE_MEETING : shown ≤10 min before / during an event
-// MODE_SLEEP   : 00:00–09:00 KST — minimal display, no network activity
+// MODE_SLEEP   : 00:00–09:00 KST — minimal display, OTA still handled
 // MODE_AUTH_SETUP / MODE_ERROR : boot-time states
 enum DisplayMode { MODE_WEEKLY, MODE_MEETING, MODE_SLEEP, MODE_AUTH_SETUP, MODE_ERROR };
 
@@ -51,8 +51,21 @@ static bool          g_activeMeetingInProgress = false;
 
 static unsigned long g_lastCalFetch = 0;
 static int           g_lastDrawnHalfHourSlot = -1;  // 0-47, -1=never
+static int           g_lastDailyRepairYday = -1;
+
+// ── Screen repair tuning ─────────────────────────────────────────────────────
+#define REPAIR_PULSE_TIME        50
+#define REPAIR_PULSE_DELAY_MS    500
+#define BOOT_REPAIR_DARK_PULSES  24
+#define BOOT_REPAIR_LIGHT_PULSES 48
+#define DAILY_REPAIR_DARK_PULSES 16
+#define DAILY_REPAIR_LIGHT_PULSES 32
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+static bool isClockSynced(time_t t) {
+    return t > 1700000000UL;
+}
+
 static bool isSleepHours(time_t t) {
     struct tm lt; localtime_r(&t, &lt);
     return lt.tm_hour < 9;   // 00:00–08:59 KST
@@ -67,6 +80,12 @@ static int halfHourSlot(time_t t) {
     struct tm lt;
     localtime_r(&t, &lt);
     return lt.tm_hour * 2 + (lt.tm_min >= 30 ? 1 : 0);
+}
+
+static int dayOfYear(time_t t) {
+    struct tm lt;
+    localtime_r(&t, &lt);
+    return lt.tm_yday;
 }
 
 // ── HTTP pull OTA ─────────────────────────────────────────────────────────────
@@ -137,7 +156,7 @@ static bool ntpSync() {
     time_t now;
     for (int i = 0; i < 30; i++) {
         time(&now);
-        if (now > 1700000000UL) { Serial.println(" ok"); return true; }
+        if (isClockSynced(now)) { Serial.println(" ok"); return true; }
         delay(500);
         Serial.print('.');
     }
@@ -187,6 +206,53 @@ static void fbFlush() {
 // Force a 4-cycle full clear on the next flush (call before mode transitions)
 static void fbRequestFullClear() {
     g_forceFullClear = true;
+}
+
+static void runScreenRepair(const char *reason,
+                            int darkPulses,
+                            int lightPulses,
+                            int finalClearCycles) {
+    Serial.printf("[repair] %s start dark=%d light=%d final_clear=%d\n",
+                  reason, darkPulses, lightPulses, finalClearCycles);
+
+    Rect_t area = epd_full_screen();
+    epd_poweron();
+    delay(10);
+
+    epd_clear();
+    for (int i = 0; i < darkPulses; i++) {
+        epd_push_pixels(area, REPAIR_PULSE_TIME, 0);
+        delay(REPAIR_PULSE_DELAY_MS);
+    }
+
+    epd_clear();
+    for (int i = 0; i < lightPulses; i++) {
+        epd_push_pixels(area, REPAIR_PULSE_TIME, 1);
+        delay(REPAIR_PULSE_DELAY_MS);
+    }
+
+    epd_clear_area_cycles(area, finalClearCycles, REPAIR_PULSE_TIME);
+    epd_poweroff_all();
+
+    if (g_fb) fbClear();
+    g_forceFullClear = false;
+    Serial.println("[repair] done");
+}
+
+static bool runDailyRepairIfDue(time_t now) {
+    if (!isClockSynced(now)) return false;
+
+    struct tm lt;
+    localtime_r(&now, &lt);
+    if (lt.tm_hour != 0) return false;
+    if (g_lastDailyRepairYday == lt.tm_yday) return false;
+
+    runScreenRepair("daily-midnight",
+                    DAILY_REPAIR_DARK_PULSES,
+                    DAILY_REPAIR_LIGHT_PULSES,
+                    6);
+    g_lastDailyRepairYday = lt.tm_yday;
+    return true;
 }
 
 // Flash a rectangular area: strong EPD clear then redraw to eliminate ghost.
@@ -297,6 +363,12 @@ void setup() {
     if (!g_fb) { Serial.println("PSRAM alloc failed!"); while (1); }
     fbClear();
 
+    runScreenRepair("boot",
+                    BOOT_REPAIR_DARK_PULSES,
+                    BOOT_REPAIR_LIGHT_PULSES,
+                    8);
+    fbRequestFullClear();
+
     // Splash
     epd_poweron();
     epd_clear();
@@ -308,7 +380,9 @@ void setup() {
     epd_poweroff();
 
     wifiConnect();
-    ntpSync();
+    if (ntpSync()) {
+        g_lastDailyRepairYday = dayOfYear(time(nullptr));
+    }
 
     // OTA update
     ArduinoOTA.setHostname("epd-calendar");
@@ -379,6 +453,7 @@ void loop() {
     int           currentHalfHourSlot = halfHourSlot(now);
 
     bool needFullRedraw = false;
+    bool repairedThisLoop = false;
 
 #ifdef OTA_VERSION_URL
     if (now_ms - g_lastHttpOtaMs >= HTTP_OTA_INTERVAL_MS) {
@@ -388,13 +463,15 @@ void loop() {
     }
 #endif
 
+    repairedThisLoop = runDailyRepairIfDue(now);
+
     // ── Sleep gate: 00:00–09:00 KST ──────────────────────────────────────────
     if (isSleepHours(now)) {
         if (g_mode != MODE_SLEEP) {
             g_mode = MODE_SLEEP;
             g_activeMeetingIdx = -1;
             g_activeMeetingInProgress = false;
-            fbRequestFullClear();
+            if (!repairedThisLoop) fbRequestFullClear();
             drawSleepScreen();
         }
         unsigned long deadline = millis() + 60000UL;
